@@ -1,0 +1,99 @@
+---
+- hosts: 172.31.31.238
+  vars:
+    ssh_port: 22
+    https_port: 443
+    max_clients: 200
+  remote_user: ec2-user
+  become: yes
+  become_method: sudo
+  tasks:
+    - name: enable epel repository
+      shell: /bin/rpm -ivh https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+      ignore_errors: True
+    - name: clean yum cache, update
+      yum:
+        name: '*'
+        state: latest
+    - name: install requisite packages
+      yum:
+        name: "{{ packages }}"
+        state: latest
+      vars:
+        packages:
+        - python34-virtualenv
+        - python36
+        - python34-pip
+        - firewalld
+        - nfs-utils
+    - name: firewalld start/enable
+      systemd:
+        name: firewalld.service
+        state: started
+        enabled: yes
+    - name: nfs-idmap start/enable
+      systemd: 
+        name: nfs-idmapd.service
+        state: started
+        enabled: yes
+    - name: nfs-client start/enable
+      systemd:
+        name: nfs-client.target
+        state: started
+        enabled: yes
+    - name: configure firewalld to allow https
+      firewalld:
+        service: https
+        permanent: true
+        state: enabled
+        immediate: yes
+    - name: create nfs directory
+      file:
+        path: /shared
+        state: directory
+        mode: 0755
+    - name: mount nfs directory
+      mount:
+        path: /shared
+        src: 172.31.21.16:/shared
+        fstype: nfs4
+        state: mounted
+    - name: grab dynamic dns script from nfs
+      synchronize:
+        src: /shared/duckdns
+        dest: /root
+    - name: add script to crontab
+      cron:
+        name: "refresh dynamic dns"
+        minute: "*/5"
+        job: "/root/duckdns/duck.sh >/dev/null 2>&1"
+    - name: get ssl certs
+      synchronize:
+        src: /shared/letsencrypt
+        dest: /etc/
+    - name: ensure selinux is enabled
+      selinux:
+        policy: targeted
+        state: permissive
+    - name: create webapp directory
+      file:
+        path: /webapp
+        state: directory
+        mode: 0700
+    - name: move application to directory
+      copy:
+        src: /shared/application.py
+        dest: /webapp/application.py
+        mode: 0700
+    - name: get requirements.txt 
+      copy:
+        src: /shared/requirements.txt
+        dest: /webapp/requirements.txt
+        mode: 0744
+    - name: install python requirements and create virtualenv
+      pip:
+        requirements: /webapp/requirements.txt
+        virtualenv: /webapp/virt
+        virtualenv_command: virtualenv-3.4
+    - name: start webapp
+      shell: nohup /webapp/virt/bin/python3.4 /webapp/application.py >/dev/null 2>&1 &
